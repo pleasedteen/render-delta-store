@@ -1,0 +1,90 @@
+{
+  "object": "demo-package",
+  "shardSize": 524288,
+  "shardCount": 16,
+  "totalSize": 8388608,
+  "shards": [
+    {
+      "position": 0,
+      "size": 524288,
+      "hash": "e6ad83a950407a0c9218e21c4347024d65b0b9e69f856175ea8c22883f603b7f"
+    },
+    {
+      "position": 1,
+      "size": 524288,
+      "hash": "cb147d383b0f0d916a75f3e7f7b0e8351dfadd1548d4e467e67ccaad3acd5026"
+    },
+    {
+      "position": 2,
+      "size": 524288,
+      "hash": "560832af8c6c38837d051e716239efe1e561c2a5a3c27821f65f6fa33c2bb4a5"
+    },
+    {
+      "position": 3,
+      "size": 524288,
+      "hash": "592b8d0392786827f1330ccf7edd76c5439eaf86a03a7a5fb0c16e4fab657d45"
+    },
+    {
+      "position": 4,
+      "size": 524288,
+      "hash": "63eb3b4fc7468dc4922aeb81d9911e1c5f0a012ac9905c42dfee71348e2220a6"
+    },
+    {
+      "position": 5,
+      "size": 524288,
+      "hash": "05c90b3aa6d2bd7cd9806d4595e1c20a4f46c2ba2cf42942efcbd47937c36ba9"
+    },
+    {
+      "position": 6,
+      "size": 524288,
+      "hash": "3884e83f971007bc313bbcb8d6d90f6a7ad1acf8437cd6e536892eded80c7c50"
+    },
+    {
+      "position": 7,
+      "size": 524288,
+      "hash": "6c7b322da77d344a1a5abed87a5aa14a696a8094d4982984fc1eb05202f2cdc1"
+    },
+    {
+      "position": 8,
+      "size": 524288,
+      "hash": "ebb3c4e0ba9f618f455ede384e10fa67fecabe9645c023815159533457d0dfd4"
+    },
+    {
+      "position": 9,
+      "size": 524288,
+      "hash": "00370469e6cd12e30d8d8037df1db584bc2b6c87f3ed8c30817a39798cb251ed"
+    },
+    {
+      "position": 10,
+      "size": 524288,
+      "hash": "f3e831b42f4bbb95d085991b4c8143ab65a5f614f08d89542a95cceddd4cb022"
+    },
+    {
+      "position": 11,
+      "size": 524288,
+      "hash": "6751620fe0cde6e4f859e07bf7649e0e8eb6954c3f28286def15080368d78098"
+    },
+    {
+      "position": 12,
+      "size": 524288,
+      "hash": "f4f598f7d8c2b39528ebafd8c28abe6059072eb4126741e6b2e5d48ee822e201"
+    },
+    {
+      "position": 13,
+      "size": 524288,
+      "hash": "4b4ce4ab1c1ba2774613fb2b318f612fb492e00343fd710d86b56f2fcb377f30"
+    },
+    {
+      "position": 14,
+      "size": 524288,
+      "hash": "0ef59283e5d497b75122fb18479793ae64b9eccfb5296ce5d5f1ed1e295ad9ee"
+    },
+    {
+      "position": 15,
+      "size": 524288,
+      "hash": "8260c8982f3e16cc889dc5ee6e4cbac8daa6ff463634cbe5be6413cc22346db3"
+    }
+  ],
+  "generator": "scripts/gen-fixtures.mjs",
+  "note": "确定性 PRNG 数据；测试用 makeShard(seed,size) 可逐字节复现第 position 片（seed=position+1）"
+}
