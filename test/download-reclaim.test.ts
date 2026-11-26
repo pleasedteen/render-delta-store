@@ -109,7 +109,7 @@ test('慢下载暂停期间发布与回收可完成；显式租约 + Range 恢�
   assert.equal(expired.status, 410);
 });
 
-test('连接级隐式租约：下载中止（连接关闭）后 blob 可被回收', async () => {
+test('响应级分片占用：下载中止（连接关闭）后占用释放，blob 下一轮即可回收', async () => {
   srv = await startTestServer();
   const v1 = await publish('slow-2', 1);
   // 用底层方式只读取部分数据然后销毁连接
@@ -118,8 +118,12 @@ test('连接级隐式租约：下载中止（连接关闭）后 blob 可被回�
   const reader = res.body.getReader();
   await reader.read();
   await reader.cancel();
-  // 等待 socket close 事件触发隐式租约释放
-  await new Promise((r) => setTimeout(r, 200));
+  // 等待服务端感知连接关闭并释放响应级占用
+  const deadline = Date.now() + 5000;
+  while (srv.store.heldBlobHashes().size > 0) {
+    if (Date.now() > deadline) throw new Error('响应中止后分片占用未释放');
+    await new Promise((r) => setTimeout(r, 20));
+  }
 
   await publish('slow-2', 200);
   await apiJson(srv.base, '/reclaim', {
@@ -132,7 +136,7 @@ test('连接级隐式租约：下载中止（连接关闭）后 blob 可被回�
     createHash('sha256').update(makeShard(p + 1, SIZE)).digest('hex'),
   );
   for (const h of v1Hashes) {
-    assert.ok(!stats.blobs.some((b) => b.hash === h), '连接关闭后隐式租约释放，blob 可回收');
+    assert.ok(!stats.blobs.some((b) => b.hash === h), '响应中止后占用释放，blob 可回收');
   }
 });
 

@@ -5,7 +5,6 @@ import type { IncomingMessage } from 'node:http';
 import { join, resolve } from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import type { Socket } from 'node:net';
 import {
   badRequest,
   conflict,
@@ -90,8 +89,12 @@ export class ObjectStore {
   private readonly sessions = new Map<string, Session>();
   private readonly objects = new Map<string, ObjectIndex>();
   private readonly leases = new Map<string, Lease>();
-  /** 连接级租约：socket -> lid，仅存内存；连接断开即释放。 */
-  private readonly connLeases = new Map<Socket, string>();
+  /**
+   * 进行中的下载响应钉住的 blob：hash -> 引用计数。仅存内存。
+   * 响应结束或中断即释放，与租约正交：即使授权下载的租约中途释放/过期，
+   * 已开始的响应也能读完；暂停的 Range 只占用其字节区间实际需要的分片。
+   */
+  private readonly shardHolds = new Map<string, number>();
   private readonly sessionLocks = new KeyedMutex();
   private readonly objectLocks = new KeyedMutex();
 
@@ -592,8 +595,13 @@ export class ObjectStore {
   createLease(name: string, vid: string, ttlSeconds: number | null): Lease {
     validateName(name);
     const idx = this.objects.get(name);
-    if (!idx || !idx.versions.some((v) => v.vid === vid)) {
+    const entry = idx?.versions.find((v) => v.vid === vid);
+    if (!idx || !entry) {
       throw notFound(`版本不存在: ${vid}`);
+    }
+    // 旧版撤下（已回收）后停止签发新租约；此前签发的租约在有效期内仍可用。
+    if (entry.state === 'reclaimed') {
+      throw gone(`版本 ${vid} 已回收，不再签发新租约`);
     }
     if (ttlSeconds !== null && (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0)) {
       throw badRequest('ttlSeconds 必须为正数或 null');
@@ -610,28 +618,34 @@ export class ObjectStore {
     return lease;
   }
 
-  /** 为整条 HTTP 连接登记隐式租约；连接关闭/中止时释放。 */
-  attachConnectionLease(socket: Socket, name: string, vid: string): void {
-    if (this.connLeases.has(socket)) return;
-    const lease: Lease = {
-      lid: randomId('conn'),
-      object: name,
-      vid,
-      createdAt: Date.now(),
-      expiresAt: null,
-    };
-    this.leases.set(lease.lid, lease);
-    this.connLeases.set(socket, lease.lid);
-    const release = () => {
-      const lid = this.connLeases.get(socket);
-      if (lid) {
-        this.leases.delete(lid);
-        this.removeLeaseFile(lid);
-        this.connLeases.delete(socket);
+  /**
+   * 响应级分片占用：下载响应开始时登记其字节区间实际需要的 blob，
+   * 返回的释放函数在响应结束（或连接中断）时调用。与租约正交——
+   * 即使授权本次下载的租约中途被释放或过期，已开始的响应也能读完。
+   * 与 requireDownloadable 在同一同步窗口内登记，回收无法穿插进来。
+   */
+  acquireShardHolds(hashes: Iterable<string>): () => void {
+    const held: string[] = [];
+    for (const h of hashes) {
+      this.shardHolds.set(h, (this.shardHolds.get(h) ?? 0) + 1);
+      held.push(h);
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      for (const h of held) {
+        const n = this.shardHolds.get(h);
+        if (n === undefined) continue;
+        if (n <= 1) this.shardHolds.delete(h);
+        else this.shardHolds.set(h, n - 1);
       }
-      socket.removeListener('close', release);
     };
-    socket.on('close', release);
+  }
+
+  /** 当前被进行中响应钉住的 blob 集合（回收与测试共用）。 */
+  heldBlobHashes(): Set<string> {
+    return new Set(this.shardHolds.keys());
   }
 
   private removeLeaseFile(lid: string): void {
@@ -722,6 +736,8 @@ export class ObjectStore {
       for (const file of await readdir(dirPath).catch(() => [] as string[])) {
         const hash = file;
         if (live.has(hash)) continue;
+        // 下载不持对象锁：活集合计算后可能有新响应开始，删除前再确认一次占用。
+        if (this.shardHolds.has(hash)) continue;
         const full = join(dirPath, file);
         const s = await stat(full).catch(() => null);
         await rm(full, { force: true });
@@ -747,6 +763,7 @@ export class ObjectStore {
    * 活集合来源：
    *  - 未回收版本（current/superseded）的全部分片；
    *  - 已回收但仍被有效租约（慢下载）钉住的版本分片；
+   *  - 进行中下载响应钉住的分片（暂停的 Range 只占其字节区间所需 blob）；
    *  - 开放会话：已确认上传的新分片 + 差量基版中“未被本会话替换”的分片。
    *    会话明确要替换的基版分片不计入活集合（若无其他使用者即可释放）。
    */
@@ -763,6 +780,8 @@ export class ObjectStore {
         for (const shard of m.shards) live.add(shard.hash);
       }
     }
+
+    for (const h of this.shardHolds.keys()) live.add(h);
 
     for (const s of this.sessions.values()) {
       if (s.status !== 'open') continue;

@@ -248,9 +248,6 @@ async function streamContent(
   const leaseId = query.get('lease');
   const manifest: VersionManifest = store.requireDownloadable(vid, leaseId);
 
-  // 连接级隐式租约：暂停接收（不关闭连接）期间，发布与回收都不会删掉这些 blob。
-  if (!leaseId) store.attachConnectionLease(req.socket, name, vid);
-
   let total: number;
   let ordered: Array<{ hash: string; size: number; position: number }>;
   if (onlyPosition === false) {
@@ -277,20 +274,10 @@ async function streamContent(
   const effectiveEnd = range?.end ?? total - 1;
   const length = effectiveEnd - effectiveStart + 1;
 
-  res.writeHead(status, {
-    'content-type': 'application/octet-stream',
-    'content-length': length,
-    'x-object': name,
-    'x-version': vid,
-    'x-total-size': String(total),
-    ...(range
-      ? { 'content-range': `bytes ${effectiveStart}-${effectiveEnd}/${total}` }
-      : { 'accept-ranges': 'bytes' }),
-  });
-
-  // 生成器：按全局字节窗口 [effectiveStart, effectiveEnd] 依次产出各 blob 的对应区间。
-  // blob 以只读流逐个打开；慢客户端反压会暂停读取，但连接（及租约）保持有效。
-  const generator = async function* () {
+  // 本响应实际需要的 blob 区间：暂停的 Range 只占用这些分片，
+  // 其余无引用分片不受阻塞，当轮回收即可删除。
+  const needed: Array<{ hash: string; skip: number; take: number }> = [];
+  {
     let cursor = 0;
     for (const part of ordered) {
       const partStart = cursor;
@@ -301,24 +288,53 @@ async function streamContent(
       const take =
         Math.min(part.size - skip, effectiveEnd - Math.max(partStart, effectiveStart) + 1);
       if (take <= 0) continue;
-      const rs = store.openBlob(part.hash, skip);
-      let remaining = take;
-      for await (const chunk of rs) {
-        const buf = chunk as Buffer;
-        if (remaining <= 0) break;
-        if (buf.length <= remaining) {
-          remaining -= buf.length;
-          yield buf;
-        } else {
-          yield buf.subarray(0, remaining);
-          remaining = 0;
+      needed.push({ hash: part.hash, skip, take });
+    }
+  }
+
+  // 响应级占用：与租约正交，保证已开始的响应在换版、回收、租约释放/过期之后
+  // 仍能读完。与 requireDownloadable 处于同一同步窗口，回收不会穿插进来。
+  const releaseHolds = store.acquireShardHolds(needed.map((n) => n.hash));
+  try {
+    res.writeHead(status, {
+      'content-type': 'application/octet-stream',
+      'content-length': length,
+      'x-object': name,
+      'x-version': vid,
+      'x-total-size': String(total),
+      ...(range
+        ? { 'content-range': `bytes ${effectiveStart}-${effectiveEnd}/${total}` }
+        : { 'accept-ranges': 'bytes' }),
+    });
+
+    // 生成器：按登记好的区间依次产出各 blob 的对应片段。
+    // blob 以只读流逐个打开；慢客户端反压会暂停读取，但占用保持有效。
+    const generator = async function* () {
+      for (const part of needed) {
+        const rs = store.openBlob(part.hash, part.skip);
+        try {
+          let remaining = part.take;
+          for await (const chunk of rs) {
+            const buf = chunk as Buffer;
+            if (remaining <= 0) break;
+            if (buf.length <= remaining) {
+              remaining -= buf.length;
+              yield buf;
+            } else {
+              yield buf.subarray(0, remaining);
+              remaining = 0;
+            }
+          }
+        } finally {
+          rs.destroy();
         }
       }
-      rs.destroy();
-    }
-  };
+    };
 
-  await pipeline(Readable.from(generator()), res);
+    await pipeline(Readable.from(generator()), res);
+  } finally {
+    releaseHolds();
+  }
 }
 
 export async function listen(
